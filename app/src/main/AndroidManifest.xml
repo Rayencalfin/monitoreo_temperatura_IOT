@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Permite mostrar notificaciones en Android 13 o superior. -->
+    <uses-permission
+        android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Permite ejecutar servicios en primer plano. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Permiso para un servicio de uso especial. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- Permite conexión a Internet para futuras etapas. -->
+    <uses-permission
+        android:name="android.permission.INTERNET" />
+
+    <!-- Permite consultar el estado de la conexión. -->
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:allowBackup="true"
+        android:label="Monitoreo Ambiental IoT"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MonitoreoAmbientalIoT"
+        android:usesCleartextTraffic="true">
+
+        <!-- Pantalla principal de la aplicación. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+
+            <intent-filter>
+                <action
+                    android:name="android.intent.action.MAIN" />
+
+                <category
+                    android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+
+        <!-- Servicio para supervisión ambiental simulada. -->
+        <service
+            android:name=".MonitoreoService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+
+            <!-- Justificación del servicio de uso especial. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Supervision ambiental simulada durante una sesion de monitoreo iniciada por el usuario, con alertas de temperatura." />
+
+        </service>
+
+
+    </application>
+
+</manifest>
