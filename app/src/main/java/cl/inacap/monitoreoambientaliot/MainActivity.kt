@@ -62,7 +62,8 @@ enum class Rol {
 data class Cuenta(
     val nombre: String,
     val rol: Rol,
-    val bloqueado: Boolean = false
+    val bloqueado: Boolean = false,
+    val uid: String = ""
 )
 
 // ============================================
@@ -683,6 +684,28 @@ fun PantallaLogin(
     val auth = remember { FirebaseAuth.getInstance() }
     val db = remember { FirebaseFirestore.getInstance() }
     var cargando by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    val proteccion = remember {
+        ProteccionIntentos(context)
+    }
+
+    var segundosBloqueo by remember {
+        mutableLongStateOf(0L)
+    }
+
+    LaunchedEffect(usuario, segundosBloqueo > 0L) {
+        if (segundosBloqueo > 0L) {
+            while (true) {
+                val restantes = proteccion.tiempoRestante(usuario)
+                segundosBloqueo = restantes
+
+                if (restantes <= 0L) break
+
+                delay(1000)
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -740,70 +763,111 @@ fun PantallaLogin(
         // Valida las credenciales ingresadas.
 
         // Inicio de sesión con Firebase Authentication.
+// Inicio de sesión con protección contra intentos fallidos.
         Button(
             onClick = {
                 val correo = usuario.trim()
+                val restantes = proteccion.tiempoRestante(correo)
 
-                if (correo.isBlank() || contrasena.isBlank()) {
-                    error = "Ingresa tu correo y contraseña"
-                } else {
-                    cargando = true
-                    error = ""
+                when {
+                    restantes > 0L -> {
+                        segundosBloqueo = restantes
+                        error = "Acceso temporalmente bloqueado. Espera $restantes segundos."
+                    }
 
-                    auth.signInWithEmailAndPassword(correo, contrasena)
-                        .addOnSuccessListener { resultado ->
-                            val uid = resultado.user?.uid
+                    correo.isBlank() || contrasena.isBlank() -> {
+                        error = "Ingresa tu correo y contraseña"
+                    }
 
-                            if (uid == null) {
-                                cargando = false
-                                error = "No se pudo identificar al usuario"
-                                auth.signOut()
-                            } else {
-                                db.collection("usuarios")
-                                    .document(uid)
-                                    .get()
-                                    .addOnSuccessListener { documento ->
-                                        cargando = false
+                    else -> {
+                        cargando = true
+                        error = ""
 
-                                        val activo = documento.getBoolean("activo") == true
-                                        val rol = documento.getString("rol")
+                        auth.signInWithEmailAndPassword(correo, contrasena)
+                            .addOnSuccessListener { resultado ->
+                                val uid = resultado.user?.uid
 
-                                        if (!documento.exists() || !activo) {
-                                            error = "Cuenta bloqueada o no autorizada"
-                                            auth.signOut()
-                                        } else if (rol != "ADMINISTRADOR" && rol != "USUARIO") {
-                                            error = "Rol no válido"
-                                            auth.signOut()
-                                        } else {
-                                            iniciarSesion(
-                                                Cuenta(
-                                                    nombre = correo,
-                                                    rol = Rol.valueOf(rol),
-                                                    bloqueado = false
+                                if (uid == null) {
+                                    cargando = false
+                                    error = "No se pudo identificar al usuario"
+                                    auth.signOut()
+                                } else {
+                                    db.collection("usuarios")
+                                        .document(uid)
+                                        .get()
+                                        .addOnSuccessListener { documento ->
+                                            cargando = false
+
+                                            val activo = documento.getBoolean("activo") == true
+                                            val rol = documento.getString("rol")
+
+                                            if (!documento.exists() || !activo) {
+                                                error = "Cuenta bloqueada o no autorizada"
+                                                auth.signOut()
+                                            } else if (
+                                                rol != "ADMINISTRADOR" &&
+                                                rol != "USUARIO"
+                                            ) {
+                                                error = "Rol no válido"
+                                                auth.signOut()
+                                            } else {
+                                                proteccion.reiniciar(correo)
+                                                segundosBloqueo = 0L
+
+                                                iniciarSesion(
+                                                    Cuenta(
+                                                        nombre = correo,
+                                                        rol = Rol.valueOf(rol),
+                                                        bloqueado = false,
+                                                        uid = uid
+                                                    )
                                                 )
-                                            )
+                                            }
                                         }
-                                    }
-                                    .addOnFailureListener {
-                                        cargando = false
-                                        error = "Error al consultar la base de datos"
-                                        auth.signOut()
-                                    }
+                                        .addOnFailureListener {
+                                            cargando = false
+                                            error = "Error al consultar la base de datos"
+                                            auth.signOut()
+                                        }
+                                }
                             }
-                        }
-                        .addOnFailureListener {
-                            cargando = false
-                            error = "Correo o contraseña incorrectos"
-                        }
+                            .addOnFailureListener { excepcion ->
+                                cargando = false
+
+                                if (
+                                    excepcion is com.google.firebase.auth.FirebaseAuthInvalidCredentialsException ||
+                                    excepcion is com.google.firebase.auth.FirebaseAuthInvalidUserException
+                                ) {
+                                    val bloqueo = proteccion.registrarFallo(correo)
+
+                                    if (bloqueo > 0L) {
+                                        segundosBloqueo = bloqueo
+                                        error = "Demasiados intentos incorrectos. Bloqueo de $bloqueo segundos."
+                                    } else {
+                                        error = "Credenciales incorrectas. Intentos restantes: ${proteccion.intentosRestantes(correo)}"
+                                    }
+                                } else {
+                                    error = "No se pudo iniciar sesión. Comprueba tu conexión e inténtalo nuevamente."
+                                }
+                            }
+                    }
                 }
             },
-            enabled = !cargando,
+            enabled = !cargando && segundosBloqueo == 0L,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(if (cargando) "Verificando..." else "Iniciar sesión")
+            Text(
+                when {
+                    cargando -> "Verificando..."
+                    segundosBloqueo > 0L -> "Espera $segundosBloqueo segundos"
+                    else -> "Iniciar sesión"
+                }
+            )
         }
+    }
 
-        // Abre el registro público.
+
+    // Abre el registro público.
         OutlinedButton(
             onClick = irRegistro,
             modifier = Modifier.fillMaxWidth()
@@ -811,7 +875,7 @@ fun PantallaLogin(
             Text("Registrarse")
         }
     }
-}
+
 
 // ============================================
 // 8. REGISTRO PÚBLICO
@@ -1337,9 +1401,54 @@ fun PantallaAdministrador(
         mutableIntStateOf(0)
     }
 
-    // Recupera las cuentas después de cambios.
-    val usuarios = remember(revision) {
-        repositorio.listarUsuarios()
+    // Usuarios registrados en Firebase.
+    var usuarios by remember {
+        mutableStateOf<List<Cuenta>>(emptyList())
+    }
+
+// Mensaje en caso de error.
+    var errorUsuarios by remember {
+        mutableStateOf("")
+    }
+
+// Escucha los cambios de usuarios en Firebase.
+    DisposableEffect(Unit) {
+
+        val listener = FirebaseFirestore.getInstance()
+            .collection("usuarios")
+            .addSnapshotListener { documentos, error ->
+
+                if (error != null) {
+                    errorUsuarios = "Error al cargar usuarios: ${error.message}"
+                    return@addSnapshotListener
+                }
+
+                errorUsuarios = ""
+
+                usuarios = documentos?.documents?.mapNotNull { documento ->
+
+                    val correo = documento.getString("correo")
+                        ?: return@mapNotNull null
+
+                    val rol = when (documento.getString("rol")) {
+                        "ADMINISTRADOR" -> Rol.ADMINISTRADOR
+                        "USUARIO" -> Rol.USUARIO
+                        else -> return@mapNotNull null
+                    }
+
+                    Cuenta(
+                        nombre = correo,
+                        rol = rol,
+                        bloqueado = documento.getBoolean("activo") != true,
+                        uid = documento.id
+                    )
+
+                }?.sortedBy { it.nombre.lowercase() } ?: emptyList()
+            }
+
+        onDispose {
+            listener.remove()
+        }
     }
 
     Column(
@@ -1803,34 +1912,54 @@ fun GestionUsuarios(
                 }
 
                 // Guarda la cuenta y actualiza la lista.
-                Button(
-                    onClick = {
 
-                        val resultado = repositorio.registrar(
-                            nuevoUsuario,
-                            nuevaContrasena,
-                            nuevoRol
-                        )
+                    Button(
+                        onClick = {
+                            val correo = nuevoUsuario.trim()
+                            val errorContrasena =
+                                SeguridadContrasenas.validar(nuevaContrasena)
 
-                        if (resultado == null) {
+                            when {
+                                correo.isBlank() ||
+                                        !android.util.Patterns.EMAIL_ADDRESS
+                                            .matcher(correo).matches() -> {
+                                    mensaje = "Ingresa un correo electrónico válido"
+                                }
 
-                            mensaje = "Usuario creado correctamente"
+                                errorContrasena != null -> {
+                                    mensaje = errorContrasena
+                                }
 
-                            nuevoUsuario = ""
-                            nuevaContrasena = ""
-                            nuevoRol = Rol.USUARIO
+                                else -> {
+                                    mensaje = "Registrando usuario..."
 
-                            actualizar()
+                                    RepositorioUsuariosFirebase.registrar(
+                                        correo = correo,
+                                        contrasena = nuevaContrasena,
+                                        rol = nuevoRol
+                                    ) { resultado ->
 
-                        } else {
-                            mensaje = resultado
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Crear usuario")
-                }
+                                        if (resultado == null) {
+                                            mensaje = "Usuario registrado correctamente en Firebase"
+                                            nuevoUsuario = ""
+                                            nuevaContrasena = ""
+                                            nuevoRol = Rol.USUARIO
+                                        } else {
+                                            mensaje = resultado
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Crear usuario")
+                    }
+
+// Cierra el Column interior
             }
+
+// Cierra el ElevatedCard
         }
 
         if (mensaje.isNotEmpty()) {
@@ -1857,6 +1986,7 @@ fun GestionUsuarios(
         }
     }
 }
+
 
 // ============================================
 // 15. TARJETA DE GESTIÓN DE USUARIO
@@ -1886,7 +2016,7 @@ fun TarjetaUsuario(
 
     // Identifica la cuenta protegida.
     val esAdminPrincipal =
-        usuario.nombre.equals("admin", true)
+        usuario.uid == FirebaseAuth.getInstance().currentUser?.uid
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth()
@@ -1968,17 +2098,11 @@ fun TarjetaUsuario(
                     FilterChip(
                         selected = usuario.rol == Rol.USUARIO,
                         onClick = {
-
-                            val resultado =
-                                repositorio.cambiarRol(
-                                    usuario.nombre,
-                                    Rol.USUARIO
-                                )
-
-                            if (resultado == null) {
-                                actualizar()
-                            } else {
-                                mensaje = resultado
+                            RepositorioUsuariosFirebase.cambiarRol(
+                                uid = usuario.uid,
+                                nuevoRol = Rol.USUARIO
+                            ) { resultado ->
+                                mensaje = resultado ?: "Rol actualizado correctamente"
                             }
                         },
                         label = {
@@ -1987,20 +2111,13 @@ fun TarjetaUsuario(
                     )
 
                     FilterChip(
-                        selected =
-                            usuario.rol == Rol.ADMINISTRADOR,
+                        selected = usuario.rol == Rol.ADMINISTRADOR,
                         onClick = {
-
-                            val resultado =
-                                repositorio.cambiarRol(
-                                    usuario.nombre,
-                                    Rol.ADMINISTRADOR
-                                )
-
-                            if (resultado == null) {
-                                actualizar()
-                            } else {
-                                mensaje = resultado
+                            RepositorioUsuariosFirebase.cambiarRol(
+                                uid = usuario.uid,
+                                nuevoRol = Rol.ADMINISTRADOR
+                            ) { resultado ->
+                                mensaje = resultado ?: "Rol actualizado correctamente"
                             }
                         },
                         label = {
@@ -2010,24 +2127,24 @@ fun TarjetaUsuario(
                 }
 
                 // Bloquea o desbloquea la cuenta.
+// Bloquear o desbloquear usuario en Firebase.
                 OutlinedButton(
                     onClick = {
+                        RepositorioUsuariosFirebase.cambiarEstado(
+                            uid = usuario.uid,
+                            activo = usuario.bloqueado
+                        ) { resultado ->
 
-                        val resultado =
-                            repositorio.cambiarBloqueo(
-                                usuario.nombre,
-                                !usuario.bloqueado
-                            )
-
-                        if (resultado == null) {
-                            actualizar()
-                        } else {
                             mensaje = resultado
+                                ?: if (usuario.bloqueado) {
+                                    "Usuario desbloqueado correctamente"
+                                } else {
+                                    "Usuario bloqueado correctamente"
+                                }
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-
                     Text(
                         if (usuario.bloqueado) {
                             "Desbloquear usuario"

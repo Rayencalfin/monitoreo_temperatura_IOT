@@ -79,4 +79,69 @@ object RepositorioUsuariosFirebase {
             resultado("Error al registrar: ${error.message}")
         }
     }
+// ============================================
+// MODIFICAR ROL DE USUARIO EN FIREBASE
+// ============================================
+
+    fun cambiarRol(
+        uid: String,
+        nuevoRol: Rol,
+        resultado: (String?) -> Unit
+    ) {
+        val administrador = FirebaseAuth.getInstance().currentUser
+
+        if (administrador == null) {
+            resultado("Debes iniciar sesión como administrador")
+            return
+        }
+
+        if (administrador.uid == uid) {
+            resultado("No puedes modificar tu propio rol")
+            return
+        }
+
+        FirebaseFirestore.getInstance()
+            .collection("usuarios")
+            .document(uid)
+            .update("rol", nuevoRol.name)
+            .addOnSuccessListener {
+                resultado(null)
+            }
+            .addOnFailureListener { error ->
+                resultado("Error al modificar rol: ${error.message}")
+            }
+    }
+
+// ============================================
+// ACTIVAR O DESACTIVAR USUARIO EN FIREBASE
+// ============================================
+
+    fun cambiarEstado(
+        uid: String,
+        activo: Boolean,
+        resultado: (String?) -> Unit
+    ) {
+        val administrador = FirebaseAuth.getInstance().currentUser
+
+        if (administrador == null) {
+            resultado("Debes iniciar sesión como administrador")
+            return
+        }
+
+        if (administrador.uid == uid) {
+            resultado("No puedes bloquear tu propia cuenta")
+            return
+        }
+
+        FirebaseFirestore.getInstance()
+            .collection("usuarios")
+            .document(uid)
+            .update("activo", activo)
+            .addOnSuccessListener {
+                resultado(null)
+            }
+            .addOnFailureListener { error ->
+                resultado("Error al cambiar estado: ${error.message}")
+            }
+    }
 }
